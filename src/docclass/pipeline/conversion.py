@@ -1,49 +1,55 @@
+"""PDF → Markdown with Docling, cached on disk by file hash.
+
+Uses the pypdfium2 backend: the default docling-parse backend ships a native DLL that Windows Smart App
+Control blocks on this machine. Page header/footer ("furniture") is exported too, because the footer holds
+IBAN, BIC, tax number and VAT ID.
+"""
+
+import hashlib
+import re
+from functools import cache
 from pathlib import Path
-from core.config import settings
-from docling.document_converter import DocumentConverter
+
+from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc import ContentLayer
+
+from docclass.core.config import settings
+
+_WATERMARK = re.compile(r"^\s*MUSTER\s*$", re.MULTILINE)
 
 
-# Paths
-upload_dir = settings.uploads_dir
-markdown_dir = settings.markdown_dir
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-# Ensure output directory exists
-markdown_dir.mkdir(parents=True, exist_ok=True)
 
-# Find PDF files
-pdf_files = list(upload_dir.glob("*.pdf"))
+@cache
+def _converter(ocr: bool) -> DocumentConverter:
+    # Building the converter loads layout models (slow); reuse it per process.
+    options = PdfPipelineOptions(do_ocr=ocr)
+    return DocumentConverter(format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=options, backend=PyPdfiumDocumentBackend),
+    })
 
-if not pdf_files:
-    raise FileNotFoundError(
-        f"No PDF files found in: {upload_dir.resolve()}"
-    )
 
-# Use first PDF file
-pdf_path = pdf_files[0]
+def strip_watermark(markdown: str) -> str:
+    """Remove the standalone "MUSTER" watermark line of the sample documents."""
+    return _WATERMARK.sub("", markdown)
 
-# Extract filename information
-pdf_name = pdf_path.name
-pdf_stem = pdf_path.stem
 
-print(f"Loading PDF: {pdf_name}")
+def pdf_to_markdown(path: Path, *, ocr: bool | None = None, use_cache: bool = True) -> str:
+    ocr = settings.ocr_enabled if ocr is None else ocr
+    cache_file = settings.markdown_cache_dir / f"{sha256_file(path)}{'-ocr' if ocr else ''}.md"
+    if use_cache and cache_file.exists():
+        return cache_file.read_text(encoding="utf-8")
 
-# Initialize converter
-converter = DocumentConverter()
-
-# Convert PDF
-result = converter.convert(pdf_path)
-
-# Export result to Markdown
-markdown_output = result.document.export_to_markdown()
-
-# Create output path using the original PDF filename
-markdown_path = markdown_dir / f"{pdf_stem}.md"
-
-# Save Markdown
-markdown_path.write_text(
-    markdown_output,
-    encoding="utf-8"
-)
-
-print(f"PDF loaded: {pdf_path.resolve()}")
-print(f"Markdown saved in: {markdown_path.resolve()}")
+    document = _converter(ocr).convert(path).document
+    markdown = strip_watermark(document.export_to_markdown(
+        included_content_layers={ContentLayer.BODY, ContentLayer.FURNITURE},
+    ))
+    if use_cache:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(markdown, encoding="utf-8")
+    return markdown

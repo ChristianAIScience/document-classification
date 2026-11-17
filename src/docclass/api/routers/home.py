@@ -6,29 +6,28 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from api.dependencies import DbSession
-from db import models
+from docclass.api.deps import DbSession
+from docclass.db import models
 
 router = APIRouter()
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 def home(db: DbSession):
-    kunden = db.scalars(select(models.Kunde)).all()
+    lieferanten = db.scalars(select(models.Lieferant).order_by(models.Lieferant.firmenname)).all()
 
-    # Generate HTML-list
-    kunden_html = "".join(
-        f"<li>{escape(kunde.firmen_name)}</li>"
-        for kunde in kunden
+    lieferanten_html = "".join(
+        f"<li>{escape(lieferant.firmenname)}</li>"
+        for lieferant in lieferanten
     )
 
     return f"""
     <html>
         <body>
             <h1>Document Classification Agent</h1>
-            <h2>Alle Kunden ({len(kunden)})</h2>
+            <h2>Alle Lieferanten ({len(lieferanten)})</h2>
             <ul>
-                {kunden_html}
+                {lieferanten_html}
             </ul>
             <a href="/docs">API-Dokumentation</a>
         </body>

@@ -1,187 +1,73 @@
-"""Customer endpoints and customer-specific document listings."""
+"""Supplier endpoints and supplier-specific document listings."""
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy import select
 
-from api.dependencies import DbSession, get_kunde_or_404
-from api.schemas import KundeCreate, KundeResponse, DokumentResponse
-from api.utils import commit_or_conflict
-from db import models
-from db.queries import list_dokumente
+from docclass.api.deps import DbSession, get_lieferant_or_404
+from docclass.api.errors import commit_or_conflict
+from docclass.db import models
+from docclass.db.repository import list_dokumente
+from docclass.schemas import DokumentResponse, LieferantCreate, LieferantResponse
 
-router = APIRouter(prefix="/kunden", tags=["Kunden"])
+router = APIRouter(prefix="/lieferanten", tags=["Lieferanten"])
 
 
-@router.post(
-    "",
-    response_model=KundeResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_kunde(kunde: KundeCreate, db: DbSession):
-    # 1. Prüfen, ob der Firmenname bereits existiert
-    existing_firma = db.scalar(
-        select(models.Kunde).where(
-            models.Kunde.firmen_name == kunde.firmen_name
-        )
+@router.post("", response_model=LieferantResponse, status_code=status.HTTP_201_CREATED)
+def create_lieferant(lieferant: LieferantCreate, db: DbSession):
+    existing = db.scalar(
+        select(models.Lieferant.id).where(models.Lieferant.firmenname == lieferant.firmenname)
     )
-
-    if existing_firma:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Firmenname existiert bereits.",
-        )
-
-    # 2. Prüfen, ob die Kundennummer bereits existiert
-    if kunde.kundennummer is not None:
-        existing_nummer = db.scalar(
-            select(models.Kunde).where(
-                models.Kunde.kundennummer == kunde.kundennummer
-            )
-        )
-
-        if existing_nummer:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Kundennummer existiert bereits.",
-            )
-
-    # 3. Neuen Kunden erstellen
-    new_kunde = models.Kunde(
-        firmen_name=kunde.firmen_name,
-        kundennummer=kunde.kundennummer,
-        strasse=kunde.strasse,
-        postleitzahl=kunde.postleitzahl,
-        stadt=kunde.stadt,
-        telefon=kunde.telefon,
-        email=kunde.email,
-    )
-
-    # 4. In der Datenbank speichern
-    db.add(new_kunde)
-    commit_or_conflict(
-        db,
-        detail="Kunde konnte nicht erstellt werden. Ein eindeutiger Wert existiert bereits.",
-    )
-    # 5. Gespeicherten Kunden zurückgeben
-    db.refresh(new_kunde)
-    return new_kunde
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Firmenname existiert bereits.")
+    new_lieferant = models.Lieferant(**lieferant.model_dump())
+    db.add(new_lieferant)
+    commit_or_conflict(db, detail="Lieferant konnte nicht erstellt werden. Die USt-ID existiert bereits.")
+    db.refresh(new_lieferant)
+    return new_lieferant
 
 
-@router.get(
-    "",
-    response_model=list[KundeResponse],
-    status_code=status.HTTP_200_OK,
-)
-def get_all_kunden(db: DbSession):
-    kunden = db.scalars(
-        select(models.Kunde).order_by(models.Kunde.firmen_name.asc())
-        ).all()
-    return kunden
+@router.get("", response_model=list[LieferantResponse])
+def get_all_lieferanten(db: DbSession, firmenname: str | None = None, ust_id: str | None = None):
+    """List suppliers with optional exact-match filters."""
+    query = select(models.Lieferant).order_by(models.Lieferant.firmenname)
+    if firmenname is not None:
+        query = query.where(models.Lieferant.firmenname == firmenname)
+    if ust_id is not None:
+        query = query.where(models.Lieferant.ust_id == ust_id)
+    return db.scalars(query).all()
 
 
-@router.get(
-    "/nr/{kundennummer}",
-    response_model=KundeResponse,
-    status_code=status.HTTP_200_OK,
-)
-def get_kunde_by_kundennummer(kundennummer: str, db: DbSession):
-    kunde = db.scalar(
-        select(models.Kunde).where(
-            models.Kunde.kundennummer == kundennummer
-        )
-    )
-
-    if kunde is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Kunde mit Kundennummer '{kundennummer}' wurde nicht gefunden.",
-        )
-
-    return kunde
+@router.get("/{lieferant_id}", response_model=LieferantResponse)
+def get_lieferant_by_id(lieferant_id: int, db: DbSession):
+    return get_lieferant_or_404(lieferant_id, db)
 
 
-@router.get(
-    "/name/{firmen_name}",
-    response_model=KundeResponse,
-    status_code=status.HTTP_200_OK,
-)
-def get_kunde_by_name(firmen_name: str, db: DbSession):
-    kunde = db.scalar(
-        select(models.Kunde).where(
-            models.Kunde.firmen_name == firmen_name
-        )
-    )
-
-    if kunde is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Kunde '{firmen_name}' wurde nicht gefunden.",
-        )
-    
-    return kunde
-
-
-@router.get(
-    "/email/{email}",
-    response_model=KundeResponse,
-    status_code=status.HTTP_200_OK,
-)
-def get_kunde_by_email(
-    email: str,
-    db: DbSession,
-):
-    kunde = db.scalar(
-        select(models.Kunde).where(
-            models.Kunde.email == email
-        )
-    )
-
-    if kunde is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Kunde mit E-Mail '{email}' wurde nicht gefunden.",
-        )
-
-    return kunde
-
-
-@router.get("/{kunde_id}", response_model=KundeResponse)
-def get_kunde_by_id(kunde_id: int, db: DbSession):
-    return get_kunde_or_404(kunde_id, db)
-
-
-@router.put("/{kunde_id}", response_model=KundeResponse)
-def update_kunde(
-    kunde_id: int,
-    kunde: KundeCreate,
-    db: DbSession,
-):
-    """Replace customer details; omitted optional fields become None."""
-    existing = get_kunde_or_404(kunde_id, db)
-    for field, value in kunde.model_dump().items():
+@router.put("/{lieferant_id}", response_model=LieferantResponse)
+def update_lieferant(lieferant_id: int, lieferant: LieferantCreate, db: DbSession):
+    """Replace supplier details; omitted optional fields become None."""
+    existing = get_lieferant_or_404(lieferant_id, db)
+    for field, value in lieferant.model_dump().items():
         setattr(existing, field, value)
     commit_or_conflict(db)
     db.refresh(existing)
     return existing
 
 
-@router.delete("/{kunde_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_kunde(kunde_id: int, db: DbSession):
-    kunde = get_kunde_or_404(kunde_id, db)
+@router.delete("/{lieferant_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lieferant(lieferant_id: int, db: DbSession):
+    lieferant = get_lieferant_or_404(lieferant_id, db)
     document_id = db.scalar(
-        select(models.KundenDokument.id).where(
-            models.KundenDokument.kunde_id == kunde_id
-        ).limit(1)
+        select(models.Dokument.id).where(models.Dokument.lieferant_id == lieferant_id).limit(1)
     )
     if document_id is not None:
-        raise HTTPException(status_code=409, detail="Kunde besitzt noch Dokumente.")
-    db.delete(kunde)
+        raise HTTPException(status_code=409, detail="Lieferant besitzt noch Dokumente.")
+    db.delete(lieferant)
     commit_or_conflict(db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/{kunde_id}/dokumente", response_model=list[DokumentResponse])
-def get_kunden_dokumente(kunde_id: int, db: DbSession):
-    get_kunde_or_404(kunde_id, db)
-    return list_dokumente(db, kunde_id=kunde_id)
+@router.get("/{lieferant_id}/dokumente", response_model=list[DokumentResponse])
+def get_lieferant_dokumente(lieferant_id: int, db: DbSession):
+    get_lieferant_or_404(lieferant_id, db)
+    return list_dokumente(db, lieferant_id=lieferant_id)

@@ -1,82 +1,90 @@
-"""Document creation, replacement, and retrieval, including offers and invoices."""
+"""Document creation, upload, replacement, and retrieval, including offers and invoices."""
 
-from typing import Literal
+import hashlib
 
-from fastapi import APIRouter, HTTPException, status
+import openai
+from fastapi import APIRouter, HTTPException, UploadFile, status
 from fastapi.responses import Response
+from pydantic import ValidationError
 from sqlalchemy import select
 
-from api.dependencies import DbSession, get_dokument_or_404
-from api.schemas import DokumentCreate, DokumentResponse
-from api.utils import commit_or_conflict
-from db import models
-from db.queries import list_dokumente
+from docclass.api.deps import DbSession, get_dokument_or_404
+from docclass.api.errors import commit_or_conflict, write_or_conflict
+from docclass.core.config import settings
+from docclass.db import models
+from docclass.db.repository import apply_dokument, create_dokument, list_dokumente
+from docclass.schemas import DokumentCreate, Dokumententyp, DokumentResponse
 
 router = APIRouter(tags=["Dokumente"])
 
+DUPLIKAT = "Dokument existiert bereits (gleiche Nummer beim selben Lieferanten oder gleiche Datei)."
 
-@router.post(
-    "/dokumente",
-    response_model=DokumentResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_dokument(
-    dokument: DokumentCreate,
-    db: DbSession,
-):
 
-    # 1. Kunden anhand des Firmennamens suchen
-    kunde = db.scalar(
-        select(models.Kunde).where(
-            models.Kunde.firmen_name == dokument.kunde.firmen_name
-        )
-    )
-
-    # 2. Fehlenden Kunden anlegen; bestehende Kundendaten beibehalten.
-    if kunde is None:
-        kunde = models.Kunde(**dokument.kunde.model_dump())
-
-    # 3. Dokument erstellen
-    # Beziehungen werden als ORM-Objekte statt verschachtelter Dictionaries gesetzt.
-    dokument_daten = dokument.model_dump(
-        exclude={"kunde", "positionen"}
-    )
-
-    new_dokument = models.KundenDokument(
-        **dokument_daten,
-        kunde=kunde,
-        positionen=[
-            models.KundenDokumentPosition(**position.model_dump())
-            for position in dokument.positionen
-        ],
-    )
-
-    # 4. Kunde, Dokument und Positionen gemeinsam speichern.
-    db.add(new_dokument)
-    commit_or_conflict(
-        db,
-        detail="Dokument konnte wegen eines Datenbankkonflikts nicht erstellt werden.",
-    )
-
+@router.post("/dokumente", response_model=DokumentResponse, status_code=status.HTTP_201_CREATED)
+def create_dokument_manual(dokument: DokumentCreate, db: DbSession):
+    """Create a document from already structured data; the supplier is matched or created."""
+    with write_or_conflict(db, detail=DUPLIKAT):
+        new_dokument = create_dokument(db, dokument)
     db.refresh(new_dokument)
+    return new_dokument
 
+
+@router.post("/dokumente/upload", response_model=DokumentResponse, status_code=status.HTTP_201_CREATED)
+def upload_dokument(datei: UploadFile, db: DbSession):
+    """Convert, classify, extract and store a PDF. Uploading the same file twice returns 409.
+
+    Synchronous on purpose: Docling is CPU-bound and FastAPI runs sync endpoints in a thread pool.
+    """
+    inhalt = datei.file.read()
+    if not inhalt.startswith(b"%PDF"):
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Nur PDF-Dateien.")
+
+    datei_hash = hashlib.sha256(inhalt).hexdigest()
+    vorhanden = db.scalar(select(models.Dokument.id).where(models.Dokument.datei_hash == datei_hash))
+    if vorhanden is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Datei wurde bereits verarbeitet (Dokument {vorhanden}).",
+        )
+
+    settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    pfad = settings.uploads_dir / f"{datei_hash}.pdf"
+    pfad.write_bytes(inhalt)
+
+    from docclass.pipeline import service  # lazy: Docling import takes seconds
+
+    try:
+        ergebnis = service.process_pdf(pfad, quelldatei=datei.filename)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Extraktion ungültig: {exc.error_count()} Fehler.",
+        ) from exc
+    except RuntimeError as exc:  # e.g. missing API key
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except openai.APIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"LLM-Extraktion fehlgeschlagen: {exc.message}",
+        ) from exc
+
+    with write_or_conflict(db, detail=DUPLIKAT):
+        new_dokument = create_dokument(db, ergebnis.dokument, **ergebnis.db_meta())
+    db.refresh(new_dokument)
     return new_dokument
 
 
 @router.get("/dokumente", response_model=list[DokumentResponse])
 def get_all_dokumente(
     db: DbSession,
-    dokumententyp: Literal["angebot", "rechnung"] | None = None,
-    kunde_id: int | None = None,
-    angebotsnummer: str | None = None,
-    auftragsnummer: str | None = None,
-    rechnungsnummer: str | None = None,
+    dokumententyp: Dokumententyp | None = None,
+    lieferant_id: int | None = None,
+    nummer: str | None = None,
+    angebot_nummer: str | None = None,
 ):
-    """List documents with optional exact-match filters, including references."""
+    """List documents with optional exact-match filters."""
     return list_dokumente(
-        db, dokumententyp=dokumententyp, kunde_id=kunde_id,
-        angebotsnummer=angebotsnummer, auftragsnummer=auftragsnummer,
-        rechnungsnummer=rechnungsnummer,
+        db, dokumententyp=dokumententyp, lieferant_id=lieferant_id,
+        nummer=nummer, angebot_nummer=angebot_nummer,
     )
 
 
@@ -86,26 +94,10 @@ def get_dokument_by_id(dokument_id: int, db: DbSession):
 
 
 @router.put("/dokumente/{dokument_id}", response_model=DokumentResponse)
-def update_dokument(
-    dokument_id: int,
-    dokument: DokumentCreate,
-    db: DbSession,
-):
-    """Replace document content and all positions, resolving its customer by name."""
-    existing = get_dokument_or_404(dokument_id, db)
-    kunde = db.scalar(select(models.Kunde).where(
-        models.Kunde.firmen_name == dokument.kunde.firmen_name
-    ))
-    if kunde is None:
-        kunde = models.Kunde(**dokument.kunde.model_dump())
-    for field, value in dokument.model_dump(exclude={"kunde", "positionen"}).items():
-        setattr(existing, field, value)
-    existing.kunde = kunde
-    existing.positionen = [
-        models.KundenDokumentPosition(**position.model_dump())
-        for position in dokument.positionen
-    ]
-    commit_or_conflict(db)
+def update_dokument(dokument_id: int, dokument: DokumentCreate, db: DbSession):
+    """Replace document content and all positions (e.g. manual correction); metadata is kept."""
+    with write_or_conflict(db, detail=DUPLIKAT):
+        existing = apply_dokument(db, get_dokument_or_404(dokument_id, db), dokument)
     db.refresh(existing)
     return existing
 
@@ -122,10 +114,10 @@ def get_all_angebote(db: DbSession):
     return list_dokumente(db, dokumententyp="angebot")
 
 
-@router.get("/angebote/{angebotsnummer}", response_model=list[DokumentResponse])
-def get_angebote_by_nummer(angebotsnummer: str, db: DbSession):
-    """Offer numbers are not unique, so return every matching offer."""
-    return list_dokumente(db, dokumententyp="angebot", angebotsnummer=angebotsnummer)
+@router.get("/angebote/{nummer}", response_model=list[DokumentResponse])
+def get_angebote_by_nummer(nummer: str, db: DbSession):
+    """Quote numbers are only unique per supplier, so return every match."""
+    return list_dokumente(db, dokumententyp="angebot", nummer=nummer)
 
 
 @router.get("/rechnungen", response_model=list[DokumentResponse])
@@ -133,9 +125,7 @@ def get_all_rechnungen(db: DbSession):
     return list_dokumente(db, dokumententyp="rechnung")
 
 
-@router.get("/rechnungen/{rechnungsnummer}", response_model=DokumentResponse)
-def get_rechnung_by_nummer(rechnungsnummer: str, db: DbSession):
-    documents = list_dokumente(db, dokumententyp="rechnung", rechnungsnummer=rechnungsnummer)
-    if not documents:
-        raise HTTPException(status_code=404, detail="Rechnung wurde nicht gefunden.")
-    return documents[0]
+@router.get("/rechnungen/{nummer}", response_model=list[DokumentResponse])
+def get_rechnungen_by_nummer(nummer: str, db: DbSession):
+    """Invoice numbers are only unique per supplier, so return every match."""
+    return list_dokumente(db, dokumententyp="rechnung", nummer=nummer)
