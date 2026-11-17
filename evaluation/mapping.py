@@ -1,6 +1,15 @@
 """Translate between ground-truth JSON (see .claude/testset-mlflow-guide.md) and `ExtractedDokument`."""
 
-from docclass.schemas import ExtractedDokument
+from docclass.schemas import Abweichung, ExtractedDokument
+
+
+def abweichung_to_truth_format(a: Abweichung) -> dict:
+    """Deviation in the key layout of `rechnung_XXXX.json["deviations"]`."""
+    s = lambda v: None if v is None else str(v)
+    return {
+        "type": a.typ, "quote_position": a.angebot_position, "invoice_position": a.rechnung_position,
+        "description": a.beschreibung, "quote_value": s(a.angebot_wert), "invoice_value": s(a.rechnung_wert),
+    }
 
 
 def to_truth_format(d: ExtractedDokument) -> dict:

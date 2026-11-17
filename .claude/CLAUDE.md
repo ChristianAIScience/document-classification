@@ -33,7 +33,10 @@ Package in `src/docclass/` (pipeline, db, api), evaluation in `evaluation/`, ove
   metric definitions: `.claude/testset-mlflow-guide.md` – read it before changing anything in `evaluation/`.
 - Every change to conversion, classification, prompt or schema gets an evaluation run
   (`uv run --group eval python -m evaluation.run_extraction --run-name <name>`) and is compared against the
-  previous run in MLflow. The tracking server runs in Docker (`docker compose up -d mlflow`, port 5000). Docling output is cached in `data/markdown_cache/` by PDF hash; delete the cache when
+  previous run in MLflow. The tracking server runs in Docker (`docker compose up -d mlflow`, port 5000).
+  Changes to `pipeline/deviation.py` additionally get a Task B run (`evaluation.run_deviation`); its
+  `--source ground-truth` mode isolates the comparison logic from extraction errors.
+- Evaluation LLM results are cached in `data/extraction_cache/` keyed by model, `PROMPT_VERSION` and Markdown. Docling output is cached in `data/markdown_cache/` by PDF hash; delete the cache when
   conversion settings change.
 
 ---

@@ -58,3 +58,46 @@ def score_items(truth: list[dict], pred: list[dict]) -> dict[str, bool]:
             same(t, ("description", "quantity", "unit", "unit_price", "total")) for t in truth
         ),
     }
+
+
+# --- Task B: deviation detection per pair (guide section 3, Task B) --- #
+
+DEVIATION_TYPES = ["price_changed", "quantity_changed", "item_missing", "item_added"]
+
+
+def score_pair(truth: list[dict], pred: list[dict]) -> dict:
+    t, p = truth[0] if truth else None, pred[0] if pred else None
+    return {
+        "actual": bool(t),
+        "predicted": bool(p),
+        "true_type": t["type"] if t else None,
+        "type_ok": bool(t and p and t["type"] == p.get("type")),
+        "position_ok": bool(t and p and t["type"] == p.get("type")
+                            and (t["quote_position"], t["invoice_position"])
+                            == (p.get("quote_position"), p.get("invoice_position"))),
+    }
+
+
+def summarize_pairs(rows: list[dict]) -> dict[str, float]:
+    """Binary detection metrics plus type/localization accuracy and recall per type."""
+    tp = sum(r["actual"] and r["predicted"] for r in rows)
+    fp = sum(not r["actual"] and r["predicted"] for r in rows)
+    fn = sum(r["actual"] and not r["predicted"] for r in rows)
+    tn = sum(not r["actual"] and not r["predicted"] for r in rows)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    actual = [r for r in rows if r["actual"]]
+    metrics = {
+        "precision": precision,
+        "recall": recall,
+        "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
+        "false_positive_rate": fp / (fp + tn) if fp + tn else 0.0,
+        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+        "type_accuracy": sum(r["type_ok"] for r in actual) / len(actual) if actual else 0.0,
+        "localization_accuracy": sum(r["position_ok"] for r in actual) / len(actual) if actual else 0.0,
+    }
+    for typ in DEVIATION_TYPES:
+        of_type = [r for r in actual if r["true_type"] == typ]
+        if of_type:
+            metrics[f"recall_{typ}"] = sum(r["type_ok"] for r in of_type) / len(of_type)
+    return {k: float(v) for k, v in metrics.items()}

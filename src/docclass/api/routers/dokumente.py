@@ -13,7 +13,8 @@ from docclass.api.errors import commit_or_conflict, write_or_conflict
 from docclass.core.config import settings
 from docclass.db import models
 from docclass.db.repository import apply_dokument, create_dokument, list_dokumente
-from docclass.schemas import DokumentCreate, Dokumententyp, DokumentResponse
+from docclass.pipeline.deviation import find_abweichungen
+from docclass.schemas import Abweichung, DokumentCreate, Dokumententyp, DokumentResponse, PositionBase
 
 router = APIRouter(tags=["Dokumente"])
 
@@ -91,6 +92,24 @@ def get_all_dokumente(
 @router.get("/dokumente/{dokument_id}", response_model=DokumentResponse)
 def get_dokument_by_id(dokument_id: int, db: DbSession):
     return get_dokument_or_404(dokument_id, db)
+
+
+@router.get("/dokumente/{dokument_id}/abweichungen", response_model=list[Abweichung])
+def get_abweichungen(dokument_id: int, db: DbSession):
+    """Compare an invoice with its linked quote; computed from the stored positions on every call."""
+    rechnung = get_dokument_or_404(dokument_id, db)
+    if rechnung.dokumententyp != "rechnung":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Abweichungen gibt es nur für Rechnungen.")
+    if rechnung.angebot_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Kein Angebot mit Nummer '{rechnung.angebot_nummer}' für diesen Lieferanten gespeichert.",
+        )
+    angebot = get_dokument_or_404(rechnung.angebot_id, db)
+    return find_abweichungen(
+        [PositionBase.model_validate(p) for p in angebot.positionen],
+        [PositionBase.model_validate(p) for p in rechnung.positionen],
+    )
 
 
 @router.put("/dokumente/{dokument_id}", response_model=DokumentResponse)

@@ -102,3 +102,20 @@ def test_upload_stores_document_and_rejects_duplicates(client, monkeypatch, tmp_
 def test_upload_rejects_non_pdf(client):
     response = client.post("/api/dokumente/upload", files={"datei": ("x.txt", b"hello", "text/plain")})
     assert response.status_code == 415
+
+
+def test_abweichungen_endpoint(client):
+    angebot = client.post("/api/dokumente", json=payload("angebot_0004")).json()
+    rechnung = client.post("/api/dokumente", json=payload("rechnung_0004")).json()
+
+    response = client.get(f"/api/dokumente/{rechnung['id']}/abweichungen")
+    assert response.status_code == 200
+    assert [(a["typ"], a["angebot_position"], a["rechnung_position"]) for a in response.json()] == [
+        ("item_missing", 3, None)
+    ]
+    assert client.get(f"/api/dokumente/{angebot['id']}/abweichungen").status_code == 409
+
+
+def test_abweichungen_without_linked_quote(client):
+    rechnung = client.post("/api/dokumente", json=payload("rechnung_0001")).json()
+    assert client.get(f"/api/dokumente/{rechnung['id']}/abweichungen").status_code == 409

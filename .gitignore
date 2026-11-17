@@ -167,6 +167,7 @@ cython_debug/
 # --- docclass --- #
 data/markdown_cache/
 data/uploads/
+data/extraction_cache/
 mlflow.db
 mlruns/
 mlflow-data/

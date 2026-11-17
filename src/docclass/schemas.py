@@ -84,6 +84,20 @@ class PositionResponse(PositionBase):
     pass
 
 
+AbweichungsTyp = Literal["price_changed", "quantity_changed", "item_missing", "item_added"]
+
+
+class Abweichung(BaseModel):
+    """Difference between a quote and its invoice. Type codes match the test set (`deviations[].type`)."""
+
+    typ: AbweichungsTyp
+    angebot_position: int | None
+    rechnung_position: int | None
+    beschreibung: str | None
+    angebot_wert: Betrag | None = None  # unit price or quantity, only for *_changed
+    rechnung_wert: Betrag | None = None
+
+
 class DokumentBase(BaseModel):
     """Inhalt eines Angebots oder einer Rechnung; nicht zutreffende Felder bleiben null."""
 

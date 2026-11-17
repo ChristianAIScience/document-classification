@@ -15,6 +15,7 @@ PDF ──Docling──▶ Markdown ──Regeln──▶ Typ (angebot/rechnung)
 | Klassifikation | `pipeline/classification.py` | regelbasiert mit Konfidenz; ab 0,75 gewinnt sie gegen das LLM |
 | Extraktion | `pipeline/extraction.py` | LangChain `ChatOpenAI.with_structured_output(ExtractedDokument)`, `PROMPT_VERSION` |
 | Validierung | `pipeline/validation.py` | Decimal-Arithmetik: Positionen, Netto, 19 % MwSt, Brutto → Warnungen |
+| Abweichungen | `pipeline/deviation.py` | Angebot ↔ Rechnung: Positionen über Beschreibung zuordnen, Preis/Menge vergleichen |
 | Orchestrierung | `pipeline/service.py` | `process_pdf(path)` ohne DB-Zugriff |
 
 ## Setup
@@ -57,6 +58,7 @@ Beträge, Angebotsreferenz, Herkunft: Datei-Hash, Markdown, Modell, Prompt-Versi
 | GET, POST | `/api/dokumente` | Liste (Filter: `dokumententyp`, `lieferant_id`, `nummer`, `angebot_nummer`) / manuell anlegen |
 | GET, PUT, DELETE | `/api/dokumente/{id}` | Lesen, ersetzen (inkl. aller Positionen), löschen |
 | GET | `/api/dokumente/{id}/positionen` | Positionen |
+| GET | `/api/dokumente/{id}/abweichungen` | Rechnung ↔ verknüpftes Angebot vergleichen (409 ohne Verknüpfung) |
 | GET | `/api/angebote`, `/api/angebote/{nummer}` | Angebote |
 | GET | `/api/rechnungen`, `/api/rechnungen/{nummer}` | Rechnungen (Nummern sind nur je Lieferant eindeutig → Liste) |
 | GET, POST | `/api/lieferanten` | Liste (Filter `firmenname`, `ust_id`) / anlegen |
@@ -95,3 +97,22 @@ Geloggt werden `testset_hash`, Modell, Prompt-Version, OCR sowie `acc_<feld>`, `
 (Guide-Felder), `doc_type_accuracy`, `items_*_accuracy`, `validation_pass_rate` und eine Tabelle pro Dokument.
 Ziel ist `MLFLOW_TRACKING_URI` (Standard `http://localhost:5000`); Artefakte gehen per HTTP an den Server
 (`--serve-artifacts`). Die MLflow-UI läuft nur im Container, weil Smart App Control die lokale Installation blockiert.
+
+LLM-Ergebnisse der Evaluation werden in `data/extraction_cache/` zwischengespeichert (Schlüssel: Modell,
+Prompt-Version, Markdown). Task A und Task B teilen sich so einen Satz LLM-Aufrufe; Wiederholungen sind kostenlos.
+
+## Evaluation (Task B: Abweichungen Angebot ↔ Rechnung)
+
+`pipeline/deviation.py` vergleicht die Positionen deterministisch: Zuordnung über die Beschreibung (exakt, sonst
+Ähnlichkeit ≥ 0,85), weil Rechnungen nach einer fehlenden Position neu nummeriert sind. Erkannt werden
+`price_changed`, `quantity_changed`, `item_missing`, `item_added` – in der API über
+`GET /api/dokumente/{rechnung_id}/abweichungen`.
+
+```powershell
+uv run --group eval python -m evaluation.run_deviation --run-name <name>                # volle Pipeline aus den PDFs
+uv run --group eval python -m evaluation.run_deviation --source ground-truth            # nur Vergleichslogik, ohne LLM
+```
+
+Experiment `document-deviation-eval`: `precision`, `recall`, `f1`, `false_positive_rate`, TP/FP/FN/TN,
+`type_accuracy`, `localization_accuracy`, `recall_<typ>` und `link_accuracy` (würde die DB die Rechnung mit dem
+Angebot verknüpfen?) plus eine Tabelle pro Paar.

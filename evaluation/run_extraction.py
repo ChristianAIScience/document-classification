@@ -45,14 +45,11 @@ def evaluate_document(pdf: Path, truth: dict, classification_only: bool) -> dict
     if classification_only:
         return row
 
-    from docclass.pipeline.extraction import extract
-    from docclass.pipeline.service import resolve_typ
     from docclass.pipeline.validation import validate
+    from evaluation.extraction_cache import extract_pdf
 
     try:
-        dokument, warnungen = resolve_typ(
-            klassifikation, extract(markdown, dokumententyp_hint=klassifikation.dokumententyp),
-        )
+        _, dokument, warnungen = extract_pdf(pdf)
     except Exception as exc:  # noqa: BLE001  one failing document must not abort the run
         row["error"] = f"{type(exc).__name__}: {exc}"[:500]
         row.update({f: False for f in FIELDS + EXTRA_FIELDS})
