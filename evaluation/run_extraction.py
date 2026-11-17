@@ -16,7 +16,7 @@ import mlflow
 import pandas as pd
 
 from docclass.core.config import settings
-from docclass.pipeline.classification import classify
+from docclass.pipeline.classification import Klassifikation, classify
 from docclass.pipeline.conversion import pdf_to_markdown
 from evaluation.mapping import to_truth_format
 from evaluation.metrics import EXTRA_FIELDS, FIELDS, score_extraction, score_items
@@ -32,39 +32,44 @@ def testset_hash(root: Path) -> str:
     return h.hexdigest()[:12]
 
 
-def evaluate_document(pdf: Path, truth: dict, classification_only: bool) -> dict:
-    markdown = pdf_to_markdown(pdf)
-    klassifikation = classify(markdown)
-    row = {
-        "file": pdf.name,
-        "true_type": truth["doc_type"],
-        "rule_type": klassifikation.dokumententyp,
-        "rule_confidence": klassifikation.konfidenz,
-        "rule_type_ok": klassifikation.dokumententyp == truth["doc_type"],
+def _rule_fields(klassifikation: Klassifikation | None, truth: dict) -> dict:
+    typ = klassifikation.dokumententyp if klassifikation else None
+    return {
+        "rule_type": typ,
+        "rule_confidence": klassifikation.konfidenz if klassifikation else 0.0,
+        "rule_type_ok": typ == truth["doc_type"],
     }
-    if classification_only:
-        return row
 
-    from docclass.pipeline.validation import validate
-    from evaluation.extraction_cache import extract_pdf
+
+def evaluate_document(pdf: Path, truth: dict, classification_only: bool) -> dict:
+    row = {"file": pdf.name, "true_type": truth["doc_type"]}
+    if classification_only:
+        return row | _rule_fields(classify(pdf_to_markdown(pdf)), truth)
+
+    from docclass.pipeline.service import process_pdf
+    from evaluation.extraction_cache import cached_extract
 
     try:
-        _, dokument, warnungen = extract_pdf(pdf)
+        ergebnis = process_pdf(pdf, extractor=cached_extract)
     except Exception as exc:  # noqa: BLE001  one failing document must not abort the run
-        row["error"] = f"{type(exc).__name__}: {exc}"[:500]
-        row.update({f: False for f in FIELDS + EXTRA_FIELDS})
-        row.update({"items_count": False, "items_totals": False, "items_exact": False, "valid": False})
-        return row
+        return row | _rule_fields(None, truth) | {f: False for f in FIELDS + EXTRA_FIELDS} | {
+            "items_count": False, "items_totals": False, "items_exact": False, "valid": False,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        }
 
-    pred = to_truth_format(dokument)
-    warnungen += validate(dokument)
-    row.update(score_extraction(truth, pred, FIELDS + EXTRA_FIELDS))
-    row.update(score_items(truth["items"], pred["items"]))
-    row["valid"] = not warnungen
-    row["warnings"] = "; ".join(warnungen)
-    row["prediction"] = json.dumps(pred, ensure_ascii=False)
-    row["error"] = None
-    return row
+    pred = to_truth_format(ergebnis.dokument)
+    return (
+        row
+        | _rule_fields(ergebnis.klassifikation, truth)
+        | score_extraction(truth, pred, FIELDS + EXTRA_FIELDS)
+        | score_items(truth["items"], pred["items"])
+        | {
+            "valid": not ergebnis.warnungen,
+            "warnings": "; ".join(ergebnis.warnungen),
+            "prediction": json.dumps(pred, ensure_ascii=False),
+            "error": None,
+        }
+    )
 
 
 def summarize(df: pd.DataFrame, classification_only: bool) -> dict[str, float]:

@@ -58,3 +58,37 @@ def test_pair_metrics_count_confusion_matrix():
     m = summarize_pairs(rows)
     assert (m["tp"], m["fp"], m["fn"], m["tn"]) == (1, 1, 1, 1)
     assert m["localization_accuracy"] == 0.5
+
+
+# --- Code review findings #3, #4 --- #
+
+def test_short_similar_descriptions_are_not_merged():
+    """#3: 'Montage' vs 'Demontage' are different work items, not OCR noise."""
+    found = find_abweichungen([pos(1, "Montage", einzelpreis="60.00")], [pos(1, "Demontage", einzelpreis="70.00")])
+    assert [(a.typ, a.angebot_position, a.rechnung_position) for a in found] == [
+        ("item_missing", 1, None), ("item_added", None, 1),
+    ]
+
+
+def test_formatting_noise_matches_exactly():
+    """Line wraps, hyphenation spaces and '×' vs 'x' do not count as differences."""
+    angebot = [pos(1, "Montage der Unter- und Oberschränke vor Ort"), pos(2, "Türblatt 860 × 1985 mm")]
+    rechnung = [pos(1, "Montage der Unter-  und Ober schränke vor Ort"), pos(2, "Türblatt 860x1985 mm")]
+    assert find_abweichungen(angebot, rechnung) == []
+
+
+def test_fuzzy_requires_same_unit():
+    angebot = [PositionBase(position=1, beschreibung="Innentürblatt Röhrenspan CPL weiß 860 x 1985 mm",
+                            menge="1", einheit="Stk.", einzelpreis="10.00")]
+    rechnung = [PositionBase(position=1, beschreibung="Innentürblatt Röhrenspan CPL weis 860 x 1985 mm",
+                             menge="1", einheit="m²", einzelpreis="10.00")]
+    assert [a.typ for a in find_abweichungen(angebot, rechnung)] == ["item_missing", "item_added"]
+
+
+def test_fuzzy_assignment_is_globally_best_not_first_come():
+    """#4: quote pos 1 must not take the invoice item that fits quote pos 2 even better."""
+    basis = "Innentürblatt Röhrenspan CPL weiß 860 x 1985 mm"
+    angebot = [pos(1, basis), pos(2, basis + " Glas")]
+    rechnung = [pos(1, basis + " Glaz"),                                   # OCR noise of quote pos 2
+                pos(2, "Innentürbiatt Röhrenspan CPL weis 860 x 1985 rnm")]  # heavy noise of quote pos 1
+    assert find_abweichungen(angebot, rechnung) == []

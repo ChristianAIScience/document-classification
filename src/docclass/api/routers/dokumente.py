@@ -100,6 +100,8 @@ def get_abweichungen(dokument_id: int, db: DbSession):
     rechnung = get_dokument_or_404(dokument_id, db)
     if rechnung.dokumententyp != "rechnung":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Abweichungen gibt es nur für Rechnungen.")
+    if not rechnung.angebot_nummer:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Die Rechnung nennt keine Angebotsnummer.")
     if rechnung.angebot_id is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

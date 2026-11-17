@@ -70,8 +70,25 @@ def create_dokument(db: Session, data: DokumentBase, **meta: Any) -> models.Doku
     return apply_dokument(db, models.Dokument(**meta), data)
 
 
+def verknuepfbar(angebot: DokumentBase, rechnung: DokumentBase) -> bool:
+    """Would storing both documents link the invoice to the quote? Pure mirror of the rules in
+    `get_or_create_lieferant` (same supplier: VAT ID, else company name) and `_link_angebot` (quote number)."""
+    a, r = angebot.lieferant, rechnung.lieferant
+    gleicher_lieferant = bool(r.ust_id and r.ust_id == a.ust_id) or r.firmenname == a.firmenname
+    return (
+        angebot.dokumententyp == "angebot" and rechnung.dokumententyp == "rechnung"
+        and bool(rechnung.angebot_nummer) and rechnung.angebot_nummer == angebot.nummer
+        and gleicher_lieferant
+    )
+
+
 def _link_angebot(db: Session, dokument: models.Dokument) -> None:
-    """Connect invoices and quotes of the same supplier via the quote number, in either upload order."""
+    """Connect invoices and quotes of the same supplier via the quote number, in either upload order.
+
+    Links pointing at `dokument` are rebuilt from scratch, so a changed quote number, supplier or type never
+    leaves an invoice attached to a quote it no longer references.
+    """
+    db.execute(update(models.Dokument).where(models.Dokument.angebot_id == dokument.id).values(angebot_id=None))
     if dokument.dokumententyp == "rechnung":
         dokument.angebot_id = None
         if dokument.angebot_nummer:

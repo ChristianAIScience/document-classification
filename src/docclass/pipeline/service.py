@@ -1,5 +1,6 @@
 """End-to-end processing of one PDF: convert → classify → extract → validate. No database access."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,10 +48,13 @@ def resolve_typ(klassifikation: Klassifikation, dokument: ExtractedDokument) -> 
     return dokument, [warnung]
 
 
-def process_pdf(path: Path, *, quelldatei: str | None = None) -> ProcessingResult:
+def process_pdf(
+    path: Path, *, quelldatei: str | None = None, extractor: Callable[..., ExtractedDokument] = extract,
+) -> ProcessingResult:
+    """`extractor` lets evaluation inject a cached LLM call while running exactly the production steps."""
     markdown = pdf_to_markdown(path)
     klassifikation = classify(markdown)
-    dokument = extract(markdown, dokumententyp_hint=klassifikation.dokumententyp)
+    dokument = extractor(markdown, dokumententyp_hint=klassifikation.dokumententyp)
     dokument, warnungen = resolve_typ(klassifikation, dokument)
     return ProcessingResult(
         quelldatei=quelldatei or path.name,

@@ -14,11 +14,12 @@ import mlflow
 import pandas as pd
 
 from docclass.core.config import settings
-from docclass.pipeline.deviation import AEHNLICHKEIT_SCHWELLE, find_abweichungen
+from docclass.db.repository import verknuepfbar
+from docclass.pipeline.deviation import AEHNLICHKEIT_SCHWELLE, MIN_LAENGE_UNSCHARF, find_abweichungen
 from docclass.pipeline.extraction import PROMPT_VERSION
 from docclass.schemas import ExtractedDokument
 from evaluation.mapping import abweichung_to_truth_format, from_truth_format
-from evaluation.metrics import score_pair, summarize_pairs
+from evaluation.metrics import score_failed_pair, score_pair, summarize_pairs
 from evaluation.run_extraction import testset_hash
 
 EXPERIMENT = "document-deviation-eval"
@@ -28,8 +29,9 @@ def load_pair(pair_id: str, source: str) -> tuple[ExtractedDokument, ExtractedDo
     def one(name: str) -> ExtractedDokument:
         if source == "ground-truth":
             return from_truth_format(json.loads((settings.testset_dir / f"{name}.json").read_text(encoding="utf-8")))
-        from evaluation.extraction_cache import extract_pdf
-        return extract_pdf(settings.testset_dir / f"{name}.pdf")[1]
+        from docclass.pipeline.service import process_pdf
+        from evaluation.extraction_cache import cached_extract
+        return process_pdf(settings.testset_dir / f"{name}.pdf", extractor=cached_extract).dokument
 
     return one(f"angebot_{pair_id}"), one(f"rechnung_{pair_id}")
 
@@ -39,15 +41,14 @@ def evaluate_pair(pair_id: str, source: str) -> dict:
     try:
         angebot, rechnung = load_pair(pair_id, source)
     except Exception as exc:  # noqa: BLE001  one failing pair must not abort the run
-        return {"pair_id": pair_id, **score_pair(truth, []), "link_ok": False,
+        return {"pair_id": pair_id, **score_failed_pair(truth), "link_ok": False,
                 "error": f"{type(exc).__name__}: {exc}"[:500]}
 
     pred = [abweichung_to_truth_format(a) for a in find_abweichungen(angebot.positionen, rechnung.positionen)]
     return {
         "pair_id": pair_id,
         **score_pair(truth, pred),
-        # Would the DB link the invoice to this quote? (same quote number, same supplier VAT ID)
-        "link_ok": rechnung.angebot_nummer == angebot.nummer and rechnung.lieferant.ust_id == angebot.lieferant.ust_id,
+        "link_ok": verknuepfbar(angebot, rechnung),  # would the DB link the invoice to this quote?
         "n_predicted": len(pred),
         "truth": json.dumps(truth, ensure_ascii=False),
         "prediction": json.dumps(pred, ensure_ascii=False),
@@ -74,6 +75,7 @@ def main() -> None:
             "model": settings.llm_model if args.source == "extraction" else None,
             "prompt_version": PROMPT_VERSION if args.source == "extraction" else None,
             "ocr": settings.ocr_enabled, "matching_threshold": AEHNLICHKEIT_SCHWELLE,
+            "matching_min_length": MIN_LAENGE_UNSCHARF,
         })
         rows = []
         for i, pair_id in enumerate(pair_ids, 1):

@@ -29,6 +29,8 @@ Package in `src/docclass/` (pipeline, db, api), evaluation in `evaluation/`, ove
 
 **Tests and evaluation**
 - `uv run pytest` runs offline: SQLite in-memory, Markdown fixtures in `tests/fixtures/`, LLM mocked. Keep it so.
+- `uv run pytest -m postgres` runs `tests/test_postgres.py` against a throwaway database on the real server
+  (migration check, constraints, the API tests again). Run it after model, migration or repository changes.
 - `data/testset/` is a frozen ground-truth set; read it, never regenerate or edit it. Its rules, JSON schema and
   metric definitions: `.claude/testset-mlflow-guide.md` – read it before changing anything in `evaluation/`.
 - Every change to conversion, classification, prompt or schema gets an evaluation run
@@ -36,7 +38,8 @@ Package in `src/docclass/` (pipeline, db, api), evaluation in `evaluation/`, ove
   previous run in MLflow. The tracking server runs in Docker (`docker compose up -d mlflow`, port 5000).
   Changes to `pipeline/deviation.py` additionally get a Task B run (`evaluation.run_deviation`); its
   `--source ground-truth` mode isolates the comparison logic from extraction errors.
-- Evaluation LLM results are cached in `data/extraction_cache/` keyed by model, `PROMPT_VERSION` and Markdown. Docling output is cached in `data/markdown_cache/` by PDF hash; delete the cache when
+- Evaluation runs the production `process_pdf` with `extractor=cached_extract`; LLM results are cached in
+  `data/extraction_cache/`, keyed by model, system prompt, output schema, `PROMPT_VERSION` and Markdown. Docling output is cached in `data/markdown_cache/` by PDF hash; delete the cache when
   conversion settings change.
 
 ---

@@ -78,6 +78,13 @@ def score_pair(truth: list[dict], pred: list[dict]) -> dict:
     }
 
 
+def score_failed_pair(truth: list[dict]) -> dict:
+    """A pair whose processing crashed is always wrong: FP on a clean pair, FN on a deviating one."""
+    t = truth[0] if truth else None
+    return {"actual": bool(t), "predicted": not t, "true_type": t["type"] if t else None,
+            "type_ok": False, "position_ok": False}
+
+
 def summarize_pairs(rows: list[dict]) -> dict[str, float]:
     """Binary detection metrics plus type/localization accuracy and recall per type."""
     tp = sum(r["actual"] and r["predicted"] for r in rows)

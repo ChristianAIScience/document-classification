@@ -76,6 +76,11 @@ uv run docclass process data/testset --save                      # ganzer Ordner
 
 `uv run pytest` – ohne Netzwerk, LLM und PostgreSQL (SQLite in-memory, Markdown-Fixtures in `tests/fixtures/`).
 
+`uv run pytest -m postgres` – Integrationstests gegen den PostgreSQL-Server aus `.env`: legt eine Wegwerf-DB
+`docclass_test_<zufall>` an, migriert sie per Alembic, prüft Migration ↔ Modelle, Downgrade/Upgrade und
+Constraints, führt die API-Tests darauf aus und löscht die DB wieder. Die Entwicklungs-DB bleibt unberührt;
+ist PostgreSQL nicht erreichbar, werden die Tests übersprungen.
+
 ## Evaluation (Task A: Extraktion)
 
 Testset: `data/testset/` (50 Paare, eingefroren, siehe `.claude/testset-mlflow-guide.md`).
@@ -99,12 +104,16 @@ Ziel ist `MLFLOW_TRACKING_URI` (Standard `http://localhost:5000`); Artefakte geh
 (`--serve-artifacts`). Die MLflow-UI läuft nur im Container, weil Smart App Control die lokale Installation blockiert.
 
 LLM-Ergebnisse der Evaluation werden in `data/extraction_cache/` zwischengespeichert (Schlüssel: Modell,
-Prompt-Version, Markdown). Task A und Task B teilen sich so einen Satz LLM-Aufrufe; Wiederholungen sind kostenlos.
+System-Prompt, Ausgabeschema, Prompt-Version, Markdown). Die Evaluation ruft dieselbe `process_pdf` wie die
+Produktion auf, nur mit gecachtem Extraktor. Task A und Task B teilen sich so einen Satz LLM-Aufrufe; Wiederholungen sind kostenlos.
 
 ## Evaluation (Task B: Abweichungen Angebot ↔ Rechnung)
 
-`pipeline/deviation.py` vergleicht die Positionen deterministisch: Zuordnung über die Beschreibung (exakt, sonst
-Ähnlichkeit ≥ 0,85), weil Rechnungen nach einer fehlenden Position neu nummeriert sind. Erkannt werden
+`pipeline/deviation.py` vergleicht die Positionen deterministisch: Zuordnung über die Beschreibung, weil Rechnungen
+nach einer fehlenden Position neu nummeriert sind. Exakt nach Normalisierung (Groß-/Kleinschreibung, Leer- und
+Satzzeichen, „×“/„x“ ignoriert); unscharf nur bei langen Beschreibungen (≥ 20 Zeichen), gleicher Einheit und
+Ähnlichkeit ≥ 0,9, global bestes Paar zuerst. Kurze Bezeichnungen wie „Montage“/„Demontage“ werden nie unscharf
+zugeordnet. Erkannt werden
 `price_changed`, `quantity_changed`, `item_missing`, `item_added` – in der API über
 `GET /api/dokumente/{rechnung_id}/abweichungen`.
 

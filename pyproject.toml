@@ -42,6 +42,8 @@ default-groups = ["dev"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = ["-m", "not postgres"]
+markers = ["postgres: integration tests against a real PostgreSQL (run with: pytest -m postgres)"]
 
 [tool.ruff]
 line-length = 110

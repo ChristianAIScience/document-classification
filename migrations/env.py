@@ -14,6 +14,9 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# Tests pass a throwaway database via `Config.attributes["url"]`; normally the URL comes from .env.
+database_url = config.attributes.get("url", settings.database_url)
+
 
 def include_name(name, type_, parent_names) -> bool:
     """Only manage tables defined in our models; foreign/legacy tables are never touched or dropped."""
@@ -34,7 +37,7 @@ def _configure(**kwargs) -> None:
 def run_migrations_offline() -> None:
     """Emit SQL without a database connection (`alembic upgrade head --sql`)."""
     _configure(
-        url=settings.database_url.render_as_string(hide_password=False),
+        url=database_url.render_as_string(hide_password=False),
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -43,7 +46,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = create_engine(settings.database_url, poolclass=pool.NullPool)
+    connectable = create_engine(database_url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
         _configure(connection=connection)
         with context.begin_transaction():
